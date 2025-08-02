@@ -100,3 +100,107 @@
     none
   )
 )
+
+;; Generates bounded sequential identifier lists for batch operations
+(define-private (enumerate (n uint))
+  (let ((limit (if (> n u10) u10 n)))
+    (list
+      (if (>= limit u1) u1 u0)
+      (if (>= limit u2) u2 u0)
+      (if (>= limit u3) u3 u0)
+      (if (>= limit u4) u4 u0)
+      (if (>= limit u5) u5 u0)
+      (if (>= limit u6) u6 u0)
+      (if (>= limit u7) u7 u0)
+      (if (>= limit u8) u8 u0)
+      (if (>= limit u9) u9 u0)
+      (if (>= limit u10) u10 u0)
+    )
+  )
+)
+
+;; Filters zero values from enumerated lists
+(define-private (is-non-zero (n uint))
+  (not (is-eq n u0))
+)
+
+;; PUBLIC CONTENT MANAGEMENT FUNCTIONS
+
+;; Submit new content for community evaluation and curation
+(define-public (contribute-item (headline (string-ascii 100)) (hyperlink (string-ascii 200)) (topic (string-ascii 20)))
+  (let
+    (
+      (item-identifier (+ (var-get aggregate-submissions) u1))
+    )
+    ;; Input validation and security checks
+    (asserts! (and 
+                (>= (len headline) u1)
+                (>= (len hyperlink) MIN_HYPERLINK_LENGTH)
+                (>= (len topic) u1)
+              ) ERR_INVALID_SUBMISSION)
+    (asserts! (> item-identifier (var-get aggregate-submissions)) ERR_OVERFLOW)
+    (asserts! (is-some (index-of (var-get content-topics) topic)) ERR_INVALID_TOPIC)
+    (asserts! (>= (stx-get-balance tx-sender) (var-get submission-charge)) ERR_INADEQUATE_BALANCE)
+    
+    ;; Process submission fee payment
+    (try! (stx-transfer? (var-get submission-charge) tx-sender PROTOCOL_ADMINISTRATOR))
+    
+    ;; Register new content item with metadata
+    (map-set curated-items
+      { item-identifier: item-identifier }
+      {
+        originator: tx-sender,
+        headline: headline,
+        hyperlink: hyperlink,
+        topic: topic,
+        publication-epoch: stacks-block-height,
+        appraisals: 0,
+        gratuities: u0,
+        flags: u0
+      }
+    )
+    
+    ;; Update global submission counter
+    (var-set aggregate-submissions item-identifier)
+    
+    ;; Emit submission event for indexing
+    (print { type: "new-item", item-identifier: item-identifier, originator: tx-sender })
+    (ok item-identifier)
+  )
+)
+
+;; Community-driven content evaluation with reputation implications
+(define-public (appraise-item (item-identifier uint) (appraisal int))
+  (let
+    (
+      (previous-appraisal (default-to 0 (get appraisal (map-get? participant-appraisals { participant: tx-sender, item-identifier: item-identifier }))))
+      (target-item (unwrap! (map-get? curated-items { item-identifier: item-identifier }) ERR_NONEXISTENT_ITEM))
+      (appraiser-standing (default-to { metric: 0 } (map-get? participant-credibility { participant: tx-sender })))
+    )
+    ;; Validation checks
+    (asserts! (item-exists item-identifier) ERR_NONEXISTENT_ITEM)
+    (asserts! (or (is-eq appraisal 1) (is-eq appraisal -1)) ERR_INVALID_APPRAISAL)
+    
+    ;; Record user's evaluation
+    (map-set participant-appraisals
+      { participant: tx-sender, item-identifier: item-identifier }
+      { appraisal: appraisal }
+    )
+    
+    ;; Update content's aggregate score
+    (map-set curated-items
+      { item-identifier: item-identifier }
+      (merge target-item { appraisals: (+ (get appraisals target-item) (- appraisal previous-appraisal)) })
+    )
+    
+    ;; Adjust user's reputation based on participation
+    (map-set participant-credibility
+      { participant: tx-sender }
+      { metric: (+ (get metric appraiser-standing) appraisal) }
+    )
+    
+    ;; Emit evaluation event
+    (print { type: "appraisal", item-identifier: item-identifier, appraiser: tx-sender, appraisal: appraisal })
+    (ok true)
+  )
+)
