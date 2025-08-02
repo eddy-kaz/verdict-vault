@@ -204,3 +204,126 @@
     (ok true)
   )
 )
+
+;; Direct monetary rewards system for quality content creators
+(define-public (reward-originator (item-identifier uint) (gratuity-amount uint))
+  (let
+    (
+      (target-item (unwrap! (map-get? curated-items { item-identifier: item-identifier }) ERR_NONEXISTENT_ITEM))
+    )
+    ;; Validation and balance checks
+    (asserts! (item-exists item-identifier) ERR_NONEXISTENT_ITEM)
+    (asserts! (>= (stx-get-balance tx-sender) gratuity-amount) ERR_INADEQUATE_BALANCE)
+    
+    ;; Update gratuity tracking before transfer
+    (map-set curated-items
+      { item-identifier: item-identifier }
+      (merge target-item { gratuities: (+ (get gratuities target-item) gratuity-amount) })
+    )
+    
+    ;; Execute STX transfer to content creator
+    (try! (stx-transfer? gratuity-amount tx-sender (get originator target-item)))
+    
+    ;; Emit reward event
+    (print { type: "reward", item-identifier: item-identifier, from: tx-sender, to: (get originator target-item), amount: gratuity-amount })
+    (ok true)
+  )
+)
+
+;; Community moderation through content flagging mechanism
+(define-public (flag-item (item-identifier uint))
+  (let
+    (
+      (target-item (unwrap! (map-get? curated-items { item-identifier: item-identifier }) ERR_NONEXISTENT_ITEM))
+    )
+    ;; Validation checks
+    (asserts! (item-exists item-identifier) ERR_NONEXISTENT_ITEM)
+    (asserts! (not (is-eq (get originator target-item) tx-sender)) ERR_INVALID_FLAG)
+    
+    ;; Increment flag counter
+    (map-set curated-items
+      { item-identifier: item-identifier }
+      (merge target-item { flags: (+ (get flags target-item) u1) })
+    )
+    
+    ;; Emit flagging event
+    (print { type: "flag", item-identifier: item-identifier, flagger: tx-sender })
+    (ok true)
+  )
+)
+
+;; READ-ONLY QUERY INTERFACE
+
+;; Retrieve comprehensive content metadata by identifier
+(define-read-only (retrieve-item-details (item-identifier uint))
+  (map-get? curated-items { item-identifier: item-identifier })
+)
+
+;; Query user's evaluation history for specific content
+(define-read-only (retrieve-participant-appraisal (participant principal) (item-identifier uint))
+  (get appraisal (map-get? participant-appraisals { participant: participant, item-identifier: item-identifier }))
+)
+
+;; Get current total submissions in the protocol
+(define-read-only (retrieve-aggregate-submissions)
+  (var-get aggregate-submissions)
+)
+
+;; Access user's reputation and credibility metrics
+(define-read-only (retrieve-participant-credibility (participant principal))
+  (default-to { metric: 0 } (map-get? participant-credibility { participant: participant }))
+)
+
+;; Generate list of valid content identifiers
+(define-read-only (get-item-ids (count uint))
+  (filter is-non-zero (enumerate count))
+)
+
+;; Retrieve highest-rated content with pagination support
+(define-read-only (retrieve-top-items (limit uint))
+  (let
+    (
+      (item-count (var-get aggregate-submissions))
+      (actual-limit (if (> limit item-count) item-count limit))
+    )
+    (filter not-none
+      (map retrieve-item-if-valid (get-item-ids actual-limit))
+    )
+  )
+)
+
+;; ADMINISTRATIVE GOVERNANCE FUNCTIONS
+
+;; Dynamic fee adjustment for protocol sustainability
+(define-public (adjust-submission-charge (new-charge uint))
+  (begin
+    (asserts! (is-eq tx-sender PROTOCOL_ADMINISTRATOR) ERR_UNAUTHORIZED_ACCESS)
+    (asserts! (<= new-charge MAX_UINT) ERR_OVERFLOW)
+    (var-set submission-charge new-charge)
+    (print { type: "fee-change", new-charge: new-charge })
+    (ok true)
+  )
+)
+
+;; Emergency content removal for policy violations
+(define-public (expunge-item (item-identifier uint))
+  (begin
+    (asserts! (is-eq tx-sender PROTOCOL_ADMINISTRATOR) ERR_UNAUTHORIZED_ACCESS)
+    (asserts! (item-exists item-identifier) ERR_NONEXISTENT_ITEM)
+    (map-delete curated-items { item-identifier: item-identifier })
+    (print { type: "item-expunged", item-identifier: item-identifier })
+    (ok true)
+  )
+)
+
+;; Expand content categorization system
+(define-public (introduce-topic (new-topic (string-ascii 20)))
+  (begin
+    (asserts! (is-eq tx-sender PROTOCOL_ADMINISTRATOR) ERR_UNAUTHORIZED_ACCESS)
+    (asserts! (< (len (var-get content-topics)) u10) ERR_INVALID_TOPIC)
+    (asserts! (>= (len new-topic) u1) ERR_INVALID_TOPIC)
+    (var-set content-topics (unwrap-panic (as-max-len? (append (var-get content-topics) new-topic) u10)))
+    (print { type: "new-topic", topic: new-topic })
+    (ok true)
+  )
+)
